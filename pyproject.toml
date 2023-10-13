@@ -16,6 +16,8 @@ numpy = "^1.26.0"
 lightning = "^2.1.0"
 einops = "^0.7.0"
 wandb = "^0.15.12"
+jsonargparse = {version = "4.22.1", extras = ["signatures"]}
+rich = "^13.6.0"
 
 
 [build-system]

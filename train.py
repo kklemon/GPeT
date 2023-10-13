@@ -9,7 +9,7 @@ import lightning as pl
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
-
+from pytorch_lightning.loggers import WandbLogger
 from bpemb import BPEmb
 from torch.utils.data import Dataset, DataLoader
 
@@ -24,10 +24,14 @@ class TokenizerConfig:
     
 
 class LanguageModelDataset(Dataset):
-    def __init__(self, path, seq_len=256, overlap=0):
+    def __init__(self, path, seq_len=256, overlap=0, debug=False):
         self.ids = np.load(path)
         self.seq_len = seq_len
         self.overlap = overlap
+        self.debug = debug
+
+        if debug:
+            self.ids = self.ids[:100_000]
 
     def __len__(self):
         return (len(self.ids) - self.overlap - 1) // self.seq_len
@@ -43,13 +47,22 @@ class LanguageModelDataset(Dataset):
     
 
 class LitLanguageModelDataModule(pl.LightningDataModule):
-    def __init__(self, root, tokenizer_config: TokenizerConfig, seq_len=256, overlap=0, batch_size: int = 128):
+    def __init__(
+        self,
+        root,
+        tokenizer_config: TokenizerConfig,
+        seq_len=256,
+        overlap=0,
+        batch_size: int = 128,
+        debug: bool = False
+    ):
         super().__init__()
         self.root = Path(root)
         self.tokenizer_config = tokenizer_config
         self.seq_len = seq_len
         self.overlap = overlap
         self.batch_size = batch_size
+        self.debug = debug
 
         self.tokenizer = None
 
@@ -59,16 +72,20 @@ class LitLanguageModelDataModule(pl.LightningDataModule):
     def setup(self, stage: str) -> None:
         self.tokenizer = self.tokenizer_config.load()
 
+        kwargs = dict(
+            seq_len=self.seq_len,
+            overlap=self.overlap,
+            debug=self.debug
+        )
+
         self.train_data = LanguageModelDataset(
             self.root / "train.npy",
-            seq_len=self.seq_len,
-            overlap=self.overlap
+            **kwargs
         )
 
         self.val_data = LanguageModelDataset(
             self.root / "valid.npy",
-            seq_len=self.seq_len,
-            overlap=self.overlap
+            **kwargs
         )
 
     def train_dataloader(self):
@@ -79,17 +96,23 @@ class LitLanguageModelDataModule(pl.LightningDataModule):
 
 
 class LitGPeT(pl.LightningModule):
-    def __init__(self, tokenizer_config: TokenizerConfig, seq_len):
+    def __init__(
+        self,
+        tokenizer_config: TokenizerConfig,
+        seq_len: int,
+        predict_embeds: bool = True
+    ):
         super().__init__()
 
         self.tokenizer_config = tokenizer_config
         self.tokenizer = self.tokenizer_config.load()
         self.seq_len = seq_len
+        self.predict_embeds = predict_embeds
 
         self.register_buffer("embeds", torch.tensor(self.tokenizer.vectors))
 
         model_dim = 512
-        num_layers = 4
+        num_layers = 8
 
         self.tok_embeds = nn.Embedding(self.tokenizer.vocab_size, model_dim)
         self.pos_embeds = nn.Embedding(self.seq_len, model_dim)
@@ -106,7 +129,9 @@ class LitGPeT(pl.LightningModule):
             num_layers=num_layers
         )
 
-        self.to_embed = nn.Linear(model_dim, self.tokenizer.dim)
+        out_dim = self.tokenizer.dim if self.predict_embeds else self.tokenizer.vocab_size
+
+        self.to_out = nn.Linear(model_dim, out_dim)
 
         self.register_buffer('attn_mask', nn.Transformer.generate_square_subsequent_mask(seq_len))
     
@@ -119,13 +144,16 @@ class LitGPeT(pl.LightningModule):
 
         x = self.encoder(x, is_causal=True, mask=self.attn_mask)
 
-        return self.to_embed(x)
+        x = self.to_out(x)
+
+        logits = x @ self.embeds.T if self.predict_embeds else x
+
+        return logits
 
     def step(self, batch, log_prefix):
         x, y = batch
 
-        embeds = self(x)
-        logits = embeds @ self.embeds.T
+        logits = self(x)
 
         loss = F.cross_entropy(
             rearrange(logits, 'b n d -> (b n) d'),
@@ -151,13 +179,18 @@ data_module = LitLanguageModelDataModule(
     tokenizer_config=tokenizer_config,
     seq_len=seq_len,
     overlap=0,
-    batch_size=4
+    batch_size=64,
+    debug=False
 )
 
 model = LitGPeT(
     tokenizer_config=tokenizer_config,
-    seq_len=seq_len
+    seq_len=seq_len,
+    predict_embeds=False
 )
 
-trainer = pl.Trainer(devices=[0])
+trainer = pl.Trainer(
+    devices=[1],
+    logger=WandbLogger(project="gpet"),
+)
 trainer.fit(model, data_module)

@@ -1,7 +1,4 @@
 from pathlib import Path
-from re import I
-from typing import Any
-from attr import dataclass
 from einops import rearrange
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS, STEP_OUTPUT, TRAIN_DATALOADERS, OptimizerLRScheduler
 import numpy as np
@@ -10,17 +7,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch
 from pytorch_lightning.loggers import WandbLogger
-from bpemb import BPEmb
 from torch.utils.data import Dataset, DataLoader
 
-@dataclass
-class TokenizerConfig:
-    name: str
-    dim: int
-    vocab_size: int
-
-    def load(self):
-        return BPEmb(lang=self.name, dim=self.dim, vs=self.vocab_size)
+from utils import TokenizerConfig
     
 
 class LanguageModelDataset(Dataset):
@@ -100,14 +89,20 @@ class LitGPeT(pl.LightningModule):
         self,
         tokenizer_config: TokenizerConfig,
         seq_len: int,
-        predict_embeds: bool = True
+        predict_embeds: bool = True,
+        num_samples_per_epoch: int = 5,
+        sample_prompt: str = "Deep Learning is "
     ):
         super().__init__()
+
+        self.save_hyperparameters()
 
         self.tokenizer_config = tokenizer_config
         self.tokenizer = self.tokenizer_config.load()
         self.seq_len = seq_len
         self.predict_embeds = predict_embeds
+        self.num_samples_per_epoch = num_samples_per_epoch
+        self.sample_prompt = sample_prompt
 
         self.register_buffer("embeds", torch.tensor(self.tokenizer.vectors))
 
@@ -169,28 +164,57 @@ class LitGPeT(pl.LightningModule):
     
     def validation_step(self, batch):
         return self.step(batch, 'val')
+    
+    def on_train_epoch_end(self) -> None:
+        if not self.num_samples_per_epoch:
+            return
+        
+        print()
+        
+        for sample in self.sample(self.sample_prompt, self.num_samples_per_epoch, self.seq_len):
+            print(sample)
+
+    def sample(self, prompt, num_samples, seq_len):
+        assert seq_len <= self.seq_len
+
+        ids = torch.tensor(self.tokenizer.encode_ids(prompt), device=self.device).unsqueeze(0)
+        ids = ids.repeat(num_samples, 1)
+
+        while ids.shape[-1] < seq_len:
+            logits = self(ids)
+            probas = torch.softmax(logits[:, -1], dim=-1)
+
+            next_token = torch.multinomial(probas, num_samples=1)
+
+            ids = torch.cat([ids, next_token], dim=-1)
+
+        return [
+            ' '.join(self.tokenizer.decode_ids(ids[i].tolist()))
+            for i in range(num_samples)
+        ]
 
 
-tokenizer_config = TokenizerConfig(name="en", dim=50, vocab_size=50000)
-seq_len = 256
+if __name__ == '__main__':
+    tokenizer_config = TokenizerConfig(name="en", dim=50, vocab_size=50000)
+    seq_len = 256
 
-data_module = LitLanguageModelDataModule(
-    root="/data/datasets/nlp/wikitext-103/bpe.vs_50",
-    tokenizer_config=tokenizer_config,
-    seq_len=seq_len,
-    overlap=0,
-    batch_size=64,
-    debug=False
-)
+    data_module = LitLanguageModelDataModule(
+        root="/data/datasets/nlp/wikitext-103/bpe.vs_50",
+        tokenizer_config=tokenizer_config,
+        seq_len=seq_len,
+        overlap=0,
+        batch_size=64,
+        debug=False
+    )
 
-model = LitGPeT(
-    tokenizer_config=tokenizer_config,
-    seq_len=seq_len,
-    predict_embeds=False
-)
+    model = LitGPeT(
+        tokenizer_config=tokenizer_config,
+        seq_len=seq_len,
+        predict_embeds=True
+    )
 
-trainer = pl.Trainer(
-    devices=[1],
-    logger=WandbLogger(project="gpet"),
-)
-trainer.fit(model, data_module)
+    trainer = pl.Trainer(
+        devices=[1],
+        logger=WandbLogger(project="gpet"),
+    )
+    trainer.fit(model, data_module)

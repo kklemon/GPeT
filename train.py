@@ -43,6 +43,7 @@ class LitLanguageModelDataModule(pl.LightningDataModule):
         seq_len=256,
         overlap=0,
         batch_size: int = 128,
+        num_workers: int = 4,
         debug: bool = False
     ):
         super().__init__()
@@ -51,6 +52,7 @@ class LitLanguageModelDataModule(pl.LightningDataModule):
         self.seq_len = seq_len
         self.overlap = overlap
         self.batch_size = batch_size
+        self.num_workers = num_workers
         self.debug = debug
 
         self.tokenizer = None
@@ -77,11 +79,19 @@ class LitLanguageModelDataModule(pl.LightningDataModule):
             **kwargs
         )
 
+    def create_dataloader(self, dataset, shuffle=False):
+        return DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            shuffle=shuffle,
+        )
+
     def train_dataloader(self):
-        return DataLoader(self.train_data, batch_size=self.batch_size, shuffle=True, drop_last=True)
+        return self.create_dataloader(self.train_data, shuffle=True)
     
     def val_dataloader(self):
-        return DataLoader(self.val_data, batch_size=self.batch_size, shuffle=True)
+        return self.create_dataloader(self.val_data)
 
 
 class LitGPeT(pl.LightningModule):
@@ -210,7 +220,7 @@ if __name__ == '__main__':
     model = LitGPeT(
         tokenizer_config=tokenizer_config,
         seq_len=seq_len,
-        predict_embeds=True
+        predict_embeds=False
     )
 
     trainer = pl.Trainer(

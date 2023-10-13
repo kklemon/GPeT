@@ -1,22 +1,22 @@
 model:
   training_config:
-    lr: 1e-4
-    weight_decay: 1e-2
-    warmup_steps: 3_000
+    lr: 3e-4
+    weight_decay: 1e-4
+    warmup_steps: 16_000
   # Don't know why but linking these arguments is not working
   tokenizer_config:
     lang: en
-    dim: 50
-    vocab_size: 50_000
+    dim: 300
+    vocab_size: 10_000
 
 data:
   tokenizer_config:
     lang: en
-    dim: 50
-    vocab_size: 50_000
+    dim: 300
+    vocab_size: 10_000
 
 trainer:
-  max_epochs: 10
+  max_epochs: 100
   fast_dev_run: false
   log_every_n_steps: 100
   logger:

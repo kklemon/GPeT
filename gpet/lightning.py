@@ -40,8 +40,8 @@ class LitLanguageModelDataModule(pl.LightningDataModule):
         root,
         tokenizer_config: TokenizerConfig,
         seq_len=256,
-        overlap=0,
-        batch_size: int = 64,
+        overlap=128,
+        batch_size: int = 256,
         num_workers: int = 4,
         debug: bool = False
     ):
@@ -152,7 +152,7 @@ class LitGPeT(pl.LightningModule):
             lr=self.training_config.lr,
             weight_decay=self.training_config.weight_decay,
             eps=1e-6,
-            betas=(0.9, 0.999),
+            betas=(0.9, 0.98),
         )
 
         # If the trainer is already available at this point, the number of training
@@ -165,10 +165,12 @@ class LitGPeT(pl.LightningModule):
         return ([opt], [{"scheduler": scheduler, "interval": "step"}])
 
     def forward(self, x):
-        x = self.tok_embeds(x)
-        x = x + self.pos_embeds(torch.arange(x.shape[1], device=x.device))[None, :, :]
+        b, n = x.shape
 
-        x = self.encoder(x, is_causal=True, mask=self.attn_mask)
+        x = self.tok_embeds(x)
+        x = x + self.pos_embeds(torch.arange(n, device=x.device))[None, :, :]
+
+        x = self.encoder(x, is_causal=True, mask=self.attn_mask[:n ,:n])
 
         x = self.to_out(x)
 
@@ -200,7 +202,7 @@ class LitGPeT(pl.LightningModule):
     def validation_step(self, batch):
         return self.step(batch, 'val')
     
-    def on_train_epoch_end(self) -> None:
+    def on_validation_epoch_end(self) -> None:
         if not self.evaluation_config.num_samples_per_epoch or self.global_rank != 0:
             return
         
@@ -213,6 +215,11 @@ class LitGPeT(pl.LightningModule):
             temperature=self.evaluation_config.temperature
         ):
             print(sample)
+
+    def decode(self, ids):
+        return self.tokenizer.decode([
+            self.tokenizer.words[idx] for idx in ids
+        ])
 
     @torch.no_grad()
     def sample(self, prompt, num_samples, seq_len, temperature=1.0):
@@ -229,7 +236,4 @@ class LitGPeT(pl.LightningModule):
 
             ids = torch.cat([ids, next_token], dim=-1)
 
-        return [
-            ' '.join(self.tokenizer.decode_ids(ids[i].tolist()))
-            for i in range(num_samples)
-        ]
+        return [self.decode(ids[i].tolist()) for i in range(num_samples)]
